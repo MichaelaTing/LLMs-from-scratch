@@ -1,4 +1,4 @@
-# pytorch Tutorial
+# PyTorch Handout
 
 ## torch
 
