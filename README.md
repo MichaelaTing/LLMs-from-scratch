@@ -11,9 +11,7 @@ pos_embedding_layer = torch.nn.Embedding(context_length, output_dim)
 pos_embeddings = pos_embedding_layer(torch.arange(max_length)) # (max_length, output_dim)
 ```
 
-- 由于独热编码行中除了一个索引外，其他索引都是0，linear层与独热编码相乘本质上等同于对
-
-- 独热元素的查找。这种在独热编码上使用矩阵乘法的方式等同于嵌入层查找，但如果处理大型嵌入矩阵，可能会效率不高，因为有很多乘以零的无用乘法。
+- 由于独热编码行中除了一个索引外，其他索引都是0，linear层与独热编码相乘本质上等同于对独热元素的查找。这种在独热编码上使用矩阵乘法的方式等同于嵌入层查找，但如果处理大型嵌入矩阵，可能会效率不高，因为有很多乘以零的无用乘法。
 
 ```python
 embedding = torch.nn.Embedding(vocab_size, output_dim)
