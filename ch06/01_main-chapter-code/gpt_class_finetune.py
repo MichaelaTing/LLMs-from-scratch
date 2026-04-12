@@ -5,7 +5,7 @@
 
 # This is a summary file containing the main takeaways from chapter 6.
 
-import urllib.request
+import requests
 import zipfile
 import os
 from pathlib import Path
@@ -21,34 +21,18 @@ from gpt_download import download_and_load_gpt2
 from previous_chapters import GPTModel, load_weights_into_gpt
 
 
-def download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path, test_mode=False):
+def download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path):
     if data_file_path.exists():
         print(f"{data_file_path} already exists. Skipping download and extraction.")
         return
 
-    if test_mode:  # Try multiple times since CI sometimes has connectivity issues
-        max_retries = 5
-        delay = 5  # delay between retries in seconds
-        for attempt in range(max_retries):
-            try:
-                # Downloading the file
-                with urllib.request.urlopen(url, timeout=10) as response:
-                    with open(zip_path, "wb") as out_file:
-                        out_file.write(response.read())
-                break  # if download is successful, break out of the loop
-            except urllib.error.URLError as e:
-                print(f"Attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(delay)  # wait before retrying
-                else:
-                    print("Failed to download file after several attempts.")
-                    return  # exit if all retries fail
-
-    else:  # Code as it appears in the chapter
-        # Downloading the file
-        with urllib.request.urlopen(url) as response:
-            with open(zip_path, "wb") as out_file:
-                out_file.write(response.read())
+    # Downloading the file
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    with open(zip_path, "wb") as out_file:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                out_file.write(chunk)
 
     # Unzipping the file
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
@@ -132,6 +116,9 @@ class SpamDataset(Dataset):
             if encoded_length > max_length:
                 max_length = encoded_length
         return max_length
+        # Note: A more pythonic version to implement this method
+        # is the following, which is also used in the next chapter:
+        # return max(len(encoded_text) for encoded_text in self.encoded_texts)
 
 
 def calc_accuracy_loader(data_loader, model, device, num_batches=None):
@@ -191,7 +178,7 @@ def evaluate_model(model, train_loader, val_loader, device, eval_iter):
 
 
 def train_classifier_simple(model, train_loader, val_loader, optimizer, device, num_epochs,
-                            eval_freq, eval_iter, tokenizer):
+                            eval_freq, eval_iter):
     # Initialize lists to track losses and tokens seen
     train_losses, val_losses, train_accs, val_accs = [], [], [], []
     examples_seen, global_step = 0, -1
@@ -252,7 +239,7 @@ if __name__ == "__main__":
 
     import argparse
 
-    parser = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="Finetune a GPT model for classification"
     )
     parser.add_argument(
@@ -273,7 +260,13 @@ if __name__ == "__main__":
     extracted_path = "sms_spam_collection"
     data_file_path = Path(extracted_path) / "SMSSpamCollection.tsv"
 
-    download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path, test_mode=args.test_mode)
+    try:
+        download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path)
+    except (requests.exceptions.RequestException, TimeoutError) as e:
+        print(f"Primary URL failed: {e}. Trying backup URL...")
+        url = "https://f001.backblazeb2.com/file/LLMs-from-scratch/sms%2Bspam%2Bcollection.zip"
+        download_and_unzip_spam_data(url, zip_path, extracted_path, data_file_path)
+
     df = pd.read_csv(data_file_path, sep="\t", header=None, names=["Label", "Text"])
     balanced_df = create_balanced_dataset(df)
     balanced_df["Label"] = balanced_df["Label"].map({"ham": 0, "spam": 1})
@@ -418,7 +411,6 @@ if __name__ == "__main__":
     train_losses, val_losses, train_accs, val_accs, examples_seen = train_classifier_simple(
         model, train_loader, val_loader, optimizer, device,
         num_epochs=num_epochs, eval_freq=50, eval_iter=5,
-        tokenizer=tokenizer
     )
 
     end_time = time.time()

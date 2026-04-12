@@ -3,12 +3,12 @@
 #   - https://www.manning.com/books/build-a-large-language-model-from-scratch
 # Code: https://github.com/rasbt/LLMs-from-scratch
 
+import argparse
 import json
 import numpy as np
 import os
-import urllib.request
 
-# import requests
+import requests
 import tensorflow as tf
 import tiktoken
 import torch
@@ -59,18 +59,18 @@ def download_and_load_gpt2(model_size, models_dir):
     return settings, params
 
 
-"""
 def download_file(url, destination):
-    # Send a GET request to download the file in streaming mode
-    response = requests.get(url, stream=True)
+    # Send a GET request to download the file
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
 
     # Get the total file size from headers, defaulting to 0 if not present
-    file_size = int(response.headers.get("content-length", 0))
+    file_size = int(response.headers.get("Content-Length", 0))
 
     # Check if file exists and has the same size
     if os.path.exists(destination):
         file_size_local = os.path.getsize(destination)
-        if file_size == file_size_local:
+        if file_size and file_size == file_size_local:
             print(f"File already exists and is up-to-date: {destination}")
             return
 
@@ -78,43 +78,12 @@ def download_file(url, destination):
     block_size = 1024  # 1 Kilobyte
 
     # Initialize the progress bar with total file size
-    progress_bar_description = url.split("/")[-1]  # Extract filename from URL
+    progress_bar_description = os.path.basename(url)
     with tqdm(total=file_size, unit="iB", unit_scale=True, desc=progress_bar_description) as progress_bar:
         # Open the destination file in binary write mode
         with open(destination, "wb") as file:
-            # Iterate over the file data in chunks
-            for chunk in response.iter_content(block_size):
-                progress_bar.update(len(chunk))  # Update progress bar
-                file.write(chunk)  # Write the chunk to the file
-"""
-
-
-def download_file(url, destination):
-    # Send a GET request to download the file
-    with urllib.request.urlopen(url) as response:
-        # Get the total file size from headers, defaulting to 0 if not present
-        file_size = int(response.headers.get("Content-Length", 0))
-
-        # Check if file exists and has the same size
-        if os.path.exists(destination):
-            file_size_local = os.path.getsize(destination)
-            if file_size == file_size_local:
-                print(f"File already exists and is up-to-date: {destination}")
-                return
-
-        # Define the block size for reading the file
-        block_size = 1024  # 1 Kilobyte
-
-        # Initialize the progress bar with total file size
-        progress_bar_description = os.path.basename(url)  # Extract filename from URL
-        with tqdm(total=file_size, unit="iB", unit_scale=True, desc=progress_bar_description) as progress_bar:
-            # Open the destination file in binary write mode
-            with open(destination, "wb") as file:
-                # Read the file in chunks and write to destination
-                while True:
-                    chunk = response.read(block_size)
-                    if not chunk:
-                        break
+            for chunk in response.iter_content(chunk_size=block_size):
+                if chunk:
                     file.write(chunk)
                     progress_bar.update(len(chunk))  # Update progress bar
 
@@ -155,8 +124,8 @@ def assign(left, right):
 
 
 def load_weights_into_gpt(gpt, params):
-    gpt.pos_emb.weight = assign(gpt.pos_emb.weight, params['wpe'])
-    gpt.tok_emb.weight = assign(gpt.tok_emb.weight, params['wte'])
+    gpt.pos_emb.weight = assign(gpt.pos_emb.weight, params["wpe"])
+    gpt.tok_emb.weight = assign(gpt.tok_emb.weight, params["wte"])
 
     for b in range(len(params["blocks"])):
         q_w, k_w, v_w = np.split(
@@ -229,11 +198,15 @@ def generate(model, idx, max_new_tokens, context_size, temperature=0.0, top_k=No
             # Keep only top_k values
             top_logits, _ = torch.topk(logits, top_k)
             min_val = top_logits[:, -1]
-            logits = torch.where(logits < min_val, torch.tensor(float('-inf')).to(logits.device), logits)
+            logits = torch.where(logits < min_val, torch.tensor(float("-inf")).to(logits.device), logits)
 
         # New: Apply temperature scaling
         if temperature > 0.0:
             logits = logits / temperature
+
+            # New (not in book): numerical stability tip to get equivalent results on mps device
+            # subtract rowwise max before softmax
+            logits = logits - logits.max(dim=-1, keepdim=True).values
 
             # Apply softmax to get probabilities
             probs = torch.softmax(logits, dim=-1)  # (batch_size, context_len)
@@ -254,9 +227,7 @@ def generate(model, idx, max_new_tokens, context_size, temperature=0.0, top_k=No
     return idx
 
 
-def main(gpt_config, input_prompt, model_size):
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def main(gpt_config, input_prompt, model_size, device):
 
     settings, params = download_and_load_gpt2(model_size=model_size, models_dir="gpt2")
 
@@ -270,7 +241,7 @@ def main(gpt_config, input_prompt, model_size):
 
     token_ids = generate(
         model=gpt,
-        idx=text_to_token_ids(input_prompt, tokenizer),
+        idx=text_to_token_ids(input_prompt, tokenizer).to(device),
         max_new_tokens=25,
         context_size=gpt_config["context_length"],
         top_k=50,
@@ -282,10 +253,30 @@ def main(gpt_config, input_prompt, model_size):
 
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Generate text with a pretrained GPT-2 model.")
+    parser.add_argument(
+        "--prompt",
+        default="Every effort moves you",
+        help="Prompt text used to seed the generation."
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device for running inference, e.g., cpu, cuda, mps, or auto."
+    )
+
+    args = parser.parse_args()
+
+
     torch.manual_seed(123)
 
     CHOOSE_MODEL = "gpt2-small (124M)"
-    INPUT_PROMPT = "Every effort moves you"
+    INPUT_PROMPT = args.prompt
+    DEVICE = torch.device(args.device)
+
+    print("PyTorch:", torch.__version__)
+    print("Device:", DEVICE)
+
 
     BASE_CONFIG = {
         "vocab_size": 50257,     # Vocabulary size
@@ -305,4 +296,4 @@ if __name__ == "__main__":
 
     BASE_CONFIG.update(model_configs[CHOOSE_MODEL])
 
-    main(BASE_CONFIG, INPUT_PROMPT, model_size)
+    main(BASE_CONFIG, INPUT_PROMPT, model_size, DEVICE)
